@@ -1,7 +1,5 @@
 import numpy as np
 from scipy.stats import norm
-import numpy as np
-from scipy.stats import norm
 from sklearn.cluster import KMeans
 
 class GaussianAsymmetricSBM:
@@ -101,6 +99,30 @@ class GaussianAsymmetricSBM:
         # Using uniform initial soft assignments
         self.tau_i = np.ones((self.N, self.K)) / self.K
 
+    def log_sum_exp_numpy(self,vals,axis=None):
+        """
+        Computes log(sum(exp(vals))) in a numerically stable way.
+
+        Args:
+            vals (np.ndarray or list): A sequence of log values.
+
+        Returns:
+            float: The log of the sum of the exponentials.
+        """
+
+        if axis is None:
+            c = np.max(vals)
+
+            # 2. Compute the log-sum-exp using the shift
+            # The term (vals - c) ensures the largest exponent is 0.
+            result = c + np.log(np.sum(np.exp(vals - c)))
+        else:
+            c = np.max(vals,axis=axis,keepdims=True)
+            c_true = np.max(vals,axis=axis)
+
+            result = c_true + np.log(np.sum(np.exp(vals - c),axis=axis))
+        return result
+
     def _e_step(self, A):
         """
         Expectation Step: Computes soft assignments tau_ik = P(Z_i=k | A, Theta).
@@ -125,28 +147,24 @@ class GaussianAsymmetricSBM:
                 
                 # 2. Contribution from i as a SOURCE (A_ij)
                 # Sum over all other nodes j != i and their possible groups m
-                for j in range(self.N):
-                    if i == j: continue # Exclude diagonal term
+                terms = log_prob_A[i,:,k,:] + np.log(self.tau_i) # shape N  x K
 
-                    # Sum log P(Z_j=m) + log P(A_ij | Z_i=k, Z_j=m)
-                    # We use the previous tau_jm as the current estimate for P(Z_j=m)
-                    log_contrib_source = np.logaddexp.reduce([
-                        np.log(self.tau_i[j, m]) + log_prob_A[i, j, k, m]
-                        for m in range(self.K)
-                    ])
-                    log_p_i_given_k += log_contrib_source
-
+                # zero out the ith entry since we're not making use of A[i,i]
+                terms[i] = -np.inf
+                log_contrib_source = self.log_sum_exp_numpy(terms,axis=1) # shape N
+                log_contrib_source[i] = 0 # log_contrib_source[i] == -inf which hoses me.
+                log_p_i_given_k+= log_contrib_source.sum()
+ 
                 # 3. Contribution from i as a SINK (A_ji)
                 # Sum over all other nodes j != i and their possible groups m
-                for j in range(self.N):
-                    if i == j: continue # Exclude diagonal term
-                    
-                    # Sum log P(Z_j=m) + log P(A_ji | Z_j=m, Z_i=k)
-                    log_contrib_sink = np.logaddexp.reduce([
-                        np.log(self.tau_i[j, m]) + log_prob_A[j, i, m, k]
-                        for m in range(self.K)
-                    ])
-                    log_p_i_given_k += log_contrib_sink
+
+                terms = log_prob_A[:,i,:,k] + np.log(self.tau_i) # shape N  x K
+
+                # zero out the ith entry since we're not making use of A[i,i]
+                terms[i] = -np.inf
+                log_contrib_sink = self.log_sum_exp_numpy(terms,axis=1) # shape N
+                log_contrib_sink[i] = 0 # log_contrib_source[i] == -inf which hoses me.
+                log_p_i_given_k+= log_contrib_sink.sum()
 
                 log_tau_i[i, k] = log_p_i_given_k
 
