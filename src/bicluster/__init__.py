@@ -1,203 +1,229 @@
 import numpy as np
 from scipy.stats import norm
+import numpy as np
+from scipy.stats import norm
+from sklearn.cluster import KMeans
 
-class GaussianAsymmetricLBM:
+class GaussianAsymmetricSBM:
     """
-    Gaussian Latent Block Model (LBM) for a non-symmetric square matrix A,
-    where row and column indices share the same K clusters (Z_i = W_i).
-
-    Uses the EM algorithm with asymmetric block parameters (mu_rs != mu_sr).
+    Gaussian Stochastic Block Model (SBM) for a non-symmetric matrix A,
+    where item clusters (Z_i) are the same for rows/columns (R=S=K).
+    
+    Model: A_ij ~ N(mu_rs, sigma_rs^2) for i != j.
+    Uses the EM algorithm with soft assignments (tau_ik).
     """
 
-    def __init__(self, K, max_iter=100, tol=1e-4):
-        """
-        :param K: Number of clusters (groups) for both rows and columns.
-        :param max_iter: Maximum number of EM iterations.
-        :param tol: Tolerance for convergence (based on log-likelihood).
-        """
+    def __init__(self, K, max_iter=100, tol=1e-5):
         self.K = K
         self.max_iter = max_iter
         self.tol = tol
-        self.mu = None
-        self.sigma2 = None
-        self.pi = None # Prior probability for Z_i (row/column group assignment)
-        self.log_likelihood_history = []
         self.N = None
+        
+        # Parameters to be learned
+        self.mu = None     # K x K block means (mu_rs)
+        self.sigma2 = None # K x K block variances (sigma2_rs)
+        self.pi = None     # K vector of cluster priors (pi_k)
+        self.tau_i = None  # N x K soft assignments (tau_ik)
+        self.log_likelihood_history = []
 
-    def _initialize_parameters(self, A):
-        """Initializes model parameters: means, variances, and priors."""
+    def _initialize_parameters_robust(self, A):
+        """Initializes parameters using K-Means for a stable start."""
         self.N = A.shape[0]
 
+        # 1. Create feature matrix by concatenating row and column profiles
+        # Feats_i = [A_i, A^T_i]
+        Features = np.hstack((A, A.T))
+        
+        # 2. Run K-Means to get initial hard assignments
+        # Use a consistent random state for reproducibility
+        kmeans = KMeans(n_clusters=self.K, random_state=42, n_init='auto')
+        initial_hard_assignments = kmeans.fit_predict(Features)
+        
+        # 3. Use hard assignments to initialize soft assignments (tau_i)
+        self.tau_i = np.zeros((self.N, self.K))
+        for i in range(self.N):
+            # Start with 90% confidence in the K-Means cluster, 
+            # and spread 10% uniformly across others (smooths initialization)
+            k_assign = initial_hard_assignments[i]
+            self.tau_i[i, :] = 0.1 / (self.K - 1)
+            self.tau_i[i, k_assign] = 0.9
+
+        # 4. Initialize Priors (pi_k) based on K-Means counts
+        self.pi = np.mean(self.tau_i, axis=0)
+        
+        # 5. Initialize Block Parameters (mu, sigma2) based on K-Means blocks
+        self.mu = np.zeros((self.K, self.K))
+        self.sigma2 = np.zeros((self.K, self.K))
+        diag_mask = ~np.eye(self.N, dtype=bool)
+
+        for r in range(self.K):
+            for s in range(self.K):
+                # Identify items belonging to group r and s
+                rows_r = np.where(initial_hard_assignments == r)[0]
+                cols_s = np.where(initial_hard_assignments == s)[0]
+                
+                # Get the submatrix A[r, s]
+                block_A = A[np.ix_(rows_r, cols_s)]
+                
+                # Exclude diagonal if r == s
+                if r == s:
+                    # Flatten the block, excluding the diagonal terms
+                    indices = np.where(diag_mask[np.ix_(rows_r, cols_s)])
+                    block_data = block_A[indices]
+                else:
+                    block_data = block_A.flatten()
+
+                # Calculate parameters from the initial partition
+                if len(block_data) > 1:
+                    self.mu[r, s] = np.mean(block_data)
+                    self.sigma2[r, s] = np.var(block_data)
+                else:
+                    # Fallback for empty/tiny blocks
+                    self.mu[r, s] = np.mean(A)
+                    self.sigma2[r, s] = 1.0 # Use a safe, large variance
+
+        # Enforce variance floor (Crucial Fix)
+        self.sigma2 = np.maximum(self.sigma2, 0.5) # Using 0.5 as a safe minimum
+
+    def _initialize_parameters(self, A):
+        """Initializes parameters and soft assignments (tau_i)."""
+        self.N = A.shape[0]
+        
         # 1. Initialize Block Parameters (mu, sigma2)
-        # K x K matrices for mu_rs and sigma2_rs (non-symmetric in indices)
-        # Randomly initialize mu (means) and sigma2 (variances)
-        # Random initialization is often performed based on K-means initial partitioning,
-        # but here we use a simple random start for simplicity.
+        # Random start for means and variances
         self.mu = np.random.uniform(np.min(A), np.max(A), size=(self.K, self.K))
-        # Ensure variance is positive
         self.sigma2 = np.random.uniform(0.1, 1.0, size=(self.K, self.K))
 
         # 2. Initialize Prior Cluster Probabilities (pi)
-        # Since Z_i = W_i, we only need one set of priors, pi_k = P(Z_i=k)
         self.pi = np.ones(self.K) / self.K
-
-    def _calculate_complete_log_likelihood(self, A, tau_i, tau_ij):
-        """
-        Calculates the complete-data log-likelihood (used for convergence check).
-        """
-        L = 0.0
-        for r in range(self.K):
-            for s in range(self.K):
-                # Likelihood contribution from block (r, s)
-                # P(A_ij | Z_i=r, Z_j=s) * P(Z_i=r) * P(Z_j=s)
-                
-                # The term (tau_ij * log(P(A_ij|...))) is the expectation part
-                # The Gaussian log-likelihood term
-                log_prob_A_ij = norm.logpdf(A, loc=self.mu[r, s], scale=np.sqrt(self.sigma2[r, s]))
-                
-                # Sum of E[log L]
-                L += np.sum(tau_ij[:, :, r, s] * log_prob_A_ij)
-                
-        # Add the expected log prior P(Z_i=k)
-        for k in range(self.K):
-             L += np.sum(tau_i[:, k] * np.log(self.pi[k]))
-
-        return L
+        
+        # 3. Initialize Soft Assignments (tau_i)
+        # Using uniform initial soft assignments
+        self.tau_i = np.ones((self.N, self.K)) / self.K
 
     def _e_step(self, A):
         """
-        Expectation Step: Calculate posterior probabilities (soft assignments).
-        
-        tau_i[i, r] = P(Z_i = r | A, Theta)
-        tau_ij[i, j, r, s] = P(Z_i = r, Z_j = s | A, Theta)
+        Expectation Step: Computes soft assignments tau_ik = P(Z_i=k | A, Theta).
         """
-        # tau_i is the soft membership for node i: N x K matrix (P(Z_i=k))
-        # We need to calculate P(Z_i=k | A, Theta)
-        
-        # log_tau_i is a temporary matrix for log-probabilities
         log_tau_i = np.zeros((self.N, self.K))
-
-        # P(A_ij | Z_i=r, Z_j=s) - N x N x K x K
-        log_prob_A = np.zeros((self.N, self.N, self.K, self.K))
         
-        # Pre-calculate the log-likelihood of each observation A_ij belonging to each block (r, s)
+        # Pre-calculate log-likelihood P(A_ij | Z_i=r, Z_j=s) for all (i,j) and (r,s)
+        # log_prob_A[i, j, r, s]
+        log_prob_A = np.zeros((self.N, self.N, self.K, self.K))
         for r in range(self.K):
             for s in range(self.K):
+                # Calculate log PDF for the entire matrix A for block (r,s)
                 log_prob_A[:, :, r, s] = norm.logpdf(A, loc=self.mu[r, s], scale=np.sqrt(self.sigma2[r, s]))
 
-        # Calculate P(Z_i=k | A, Theta) which is proportional to P(A | Z_i=k, Theta) * P(Z_i=k)
-        # P(A | Z_i=k) is proportional to:
-        # P(Z_i=k) * [ Product_j P(A_ij | Z_i=k, Z_j) * Product_j P(A_ji | Z_j, Z_i=k) ]
-        
-        # Iteratively calculate the expected log-likelihood for each node i
+        # Calculate log_tau_i[i, k] based on contribution of i as source and sink
         for i in range(self.N):
             for k in range(self.K):
-                # E[ log P(A_i | Z_i=k) ]
-                # log P(Z_i=k)
+                # 1. Start with the log prior: log P(Z_i=k)
                 log_p_i_given_k = np.log(self.pi[k])
                 
-                # Sum over all j of E[log P(A_ij | Z_i=k, Z_j) + log P(A_ji | Z_j, Z_i=k)]
+                # 2. Contribution from i as a SOURCE (A_ij)
+                # Sum over all other nodes j != i and their possible groups m
                 for j in range(self.N):
-                    # Sum over all possible groups m for Z_j
-                    log_p_ij_sum = 0.0
-                    for m in range(self.K):
-                        # P(Z_j=m | A) (approximated by pi_m or previous tau_i) * # [ P(A_ij | Z_i=k, Z_j=m) * P(A_ji | Z_j=m, Z_i=k) ]
-                        
-                        # Simplified approximation: we use the prior pi_m for Z_j, 
-                        # which simplifies the structure but is standard in LBM implementation.
-                        # The full expectation calculation requires iterative updates, 
-                        # but we use the simpler factorization for tractability.
-                        
-                        log_prob_ij = log_prob_A[i, j, k, m] # P(A_ij | Z_i=k, Z_j=m)
-                        log_prob_ji = log_prob_A[j, i, m, k] # P(A_ji | Z_j=m, Z_i=k)
-                        
-                        # Accumulate terms: P(Z_j=m) * likelihood(A_ij, A_ji)
-                        # We use log-sum-exp to handle small probabilities
-                        log_p_ij_sum = np.logaddexp(log_p_ij_sum, 
-                                                    np.log(self.pi[m]) + log_prob_ij + log_prob_ji)
+                    if i == j: continue # Exclude diagonal term
 
-                    log_p_i_given_k += log_p_ij_sum
-                
+                    # Sum log P(Z_j=m) + log P(A_ij | Z_i=k, Z_j=m)
+                    # We use the previous tau_jm as the current estimate for P(Z_j=m)
+                    log_contrib_source = np.logaddexp.reduce([
+                        np.log(self.tau_i[j, m]) + log_prob_A[i, j, k, m]
+                        for m in range(self.K)
+                    ])
+                    log_p_i_given_k += log_contrib_source
+
+                # 3. Contribution from i as a SINK (A_ji)
+                # Sum over all other nodes j != i and their possible groups m
+                for j in range(self.N):
+                    if i == j: continue # Exclude diagonal term
+                    
+                    # Sum log P(Z_j=m) + log P(A_ji | Z_j=m, Z_i=k)
+                    log_contrib_sink = np.logaddexp.reduce([
+                        np.log(self.tau_i[j, m]) + log_prob_A[j, i, m, k]
+                        for m in range(self.K)
+                    ])
+                    log_p_i_given_k += log_contrib_sink
+
                 log_tau_i[i, k] = log_p_i_given_k
-        
-        # Normalize to get posterior tau_i: P(Z_i=k | A, Theta)
+
+        # Normalize log probabilities to get tau_i (posterior P(Z_i=k | A))
         log_tau_i_max = np.max(log_tau_i, axis=1, keepdims=True)
-        tau_i = np.exp(log_tau_i - log_tau_i_max)
-        tau_i = tau_i / np.sum(tau_i, axis=1, keepdims=True)
+        self.tau_i = np.exp(log_tau_i - log_tau_i_max)
+        self.tau_i = self.tau_i / np.sum(self.tau_i, axis=1, keepdims=True)
         
-        # Calculate tau_ij[i, j, r, s] = P(Z_i = r, Z_j = s | A, Theta) 
-        # For simplicity and computational stability, we approximate this using:
-        # P(Z_i=r, Z_j=s | A) ~ P(Z_i=r | A) * P(Z_j=s | A)
-        tau_ij = np.einsum('ir, js -> ijsr', tau_i, tau_i)
+        # Avoid division by zero in case of an item having zero probability everywhere
+        self.tau_i[np.isnan(self.tau_i)] = 1.0 / self.K
 
-        return tau_i, tau_ij
 
-    def _m_step(self, A, tau_i, tau_ij):
+    def _m_step(self, A):
         """
-        Maximization Step: Update parameters (pi, mu, sigma2) using soft assignments.
+        Maximization Step: Updates parameters (pi, mu, sigma2) using tau_i.
+        
+        Crucially excludes diagonal terms (i=j) in all summations.
         """
+        # Create a mask to exclude the diagonal terms (i=j)
+        diag_mask = ~np.eye(self.N, dtype=bool)
+        
         # 1. Update Priors (pi_k)
-        # pi_k = (1/N) * sum_i P(Z_i=k | A)
-        self.pi = np.mean(tau_i, axis=0)
+        self.pi = np.mean(self.tau_i, axis=0)
 
         # 2. Update Means (mu_rs) and Variances (sigma2_rs)
         for r in range(self.K):
             for s in range(self.K):
-                # Numerator: sum_i sum_j P(Z_i=r, Z_j=s | A) * A_ij
-                # Use einsum for vectorized weighted sum: sum_{ij} tau_ij * A
-                numerator = np.sum(tau_ij[:, :, r, s] * A)
+                
+                # Weight matrix for block (r, s): tau_ir * tau_js
+                # tau_i is N x K, outer product gives N x N x K x K
+                tau_rs_ij = np.outer(self.tau_i[:, r], self.tau_i[:, s])
+                
+                # Apply the diagonal mask to the weights
+                weighted_tau = tau_rs_ij * diag_mask
 
-                # Denominator: sum_i sum_j P(Z_i=r, Z_j=s | A)
-                denominator = np.sum(tau_ij[:, :, r, s])
+                # Denominator: sum_{i!=j} tau_ir * tau_js
+                denominator = np.sum(weighted_tau)
                 
                 if denominator > 1e-8:
-                    # Update mu_rs
-                    self.mu[r, s] = numerator / denominator
+                    # Numerator for mu_rs: sum_{i!=j} (tau_ir * tau_js) * A_ij
+                    numerator_mu = np.sum(weighted_tau * A)
+                    self.mu[r, s] = numerator_mu / denominator
                     
-                    # Update sigma2_rs
-                    # Numerator: sum_{ij} tau_ij * (A_ij - mu_rs)^2
-                    weighted_sq_diff = tau_ij[:, :, r, s] * (A - self.mu[r, s])**2
+                    # Numerator for sigma2_rs: sum_{i!=j} (tau_ir * tau_js) * (A_ij - mu_rs)^2
+                    weighted_sq_diff = weighted_tau * (A - self.mu[r, s])**2
                     self.sigma2[r, s] = np.sum(weighted_sq_diff) / denominator
                     
-                    # Ensure variance is not zero
-                    self.sigma2[r, s] = max(self.sigma2[r, s], 1e-6)
+                    # Ensure variance is non-negative
+                    self.sigma2[r, s] = max(self.sigma2[r, s], 1e-3)
                 else:
-                    # If denominator is tiny, keep old values (or re-initialize)
+                    # Keep old values if block is empty
                     pass
 
-
     def fit(self, A):
-        """
-        Runs the EM algorithm to fit the LBM to data A.
-        :param A: The square, non-symmetric input matrix.
-        """
+        """Runs the EM algorithm to fit the SBM to data A."""
         if A.shape[0] != A.shape[1]:
             raise ValueError("Input matrix A must be square.")
 
-        self._initialize_parameters(A)
-        
-        # Initialize tau_i for the first E-step
-        tau_i = np.ones((self.N, self.K)) / self.K
-        tau_ij = np.einsum('ir, js -> ijsr', tau_i, tau_i)
+        self._initialize_parameters_robust(A)
 
         for iteration in range(self.max_iter):
-            # E-Step
-            tau_i, tau_ij = self._e_step(A)
-            
-            # M-Step
-            self._m_step(A, tau_i, tau_ij)
-            
-            # Calculate and check convergence
-            current_log_likelihood = self._calculate_complete_log_likelihood(A, tau_i, tau_ij)
-            self.log_likelihood_history.append(current_log_likelihood)
-            
-            if iteration > 0:
-                delta = current_log_likelihood - self.log_likelihood_history[-2]
-                if abs(delta) < self.tol * abs(current_log_likelihood):
-                    print(f"EM converged after {iteration + 1} iterations.")
-                    break
-        
-        self.tau_i = tau_i # Store final soft assignments
-        return self
+            # Store old tau_i for convergence check
+            tau_old = self.tau_i.copy()
 
+            # E-Step (updates self.tau_i)
+            self._e_step(A)
+            
+            # M-Step (updates self.pi, self.mu, self.sigma2)
+            self._m_step(A)
+            
+            # Check convergence using change in soft assignments (tau_i)
+            tau_diff = np.linalg.norm(self.tau_i - tau_old)
+            
+            if tau_diff < self.tol:
+                print(f"EM converged after {iteration + 1} iterations (tau difference: {tau_diff:.6f}).")
+                break
+            
+            # Use log likelihood check for alternative convergence criteria if preferred
+            # log_likelihood_check = self._calculate_log_likelihood(A)
+
+        return self
 
