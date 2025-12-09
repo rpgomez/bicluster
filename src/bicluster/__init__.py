@@ -109,11 +109,13 @@ class GaussianAsymmetricSBM:
         
         # Pre-calculate log-likelihood P(A_ij | Z_i=r, Z_j=s) for all (i,j) and (r,s)
         # log_prob_A[i, j, r, s]
-        log_prob_A = np.zeros((self.N, self.N, self.K, self.K))
-        for r in range(self.K):
-            for s in range(self.K):
-                # Calculate log PDF for the entire matrix A for block (r,s)
-                log_prob_A[:, :, r, s] = norm.logpdf(A, loc=self.mu[r, s], scale=np.sqrt(self.sigma2[r, s]))
+
+        N = self.N
+        K = self.K
+
+        loc = self.mu.reshape(1,1,K,K)
+        scale = np.sqrt(self.sigma2).reshape(1,1,K,K)
+        log_prob_A = norm.logpdf(A.reshape(N,N,1,1),loc=loc,scale=scale)
 
         # Calculate log_tau_i[i, k] based on contribution of i as source and sink
         for i in range(self.N):
