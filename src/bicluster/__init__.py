@@ -184,40 +184,32 @@ class GaussianAsymmetricSBM:
         
         Crucially excludes diagonal terms (i=j) in all summations.
         """
+
+        N = self.N
+        K = self.K
+        
         # Create a mask to exclude the diagonal terms (i=j)
-        diag_mask = ~np.eye(self.N, dtype=bool)
+        diag_mask = ~np.eye(self.N, dtype=bool) # shape N x N
         
         # 1. Update Priors (pi_k)
         self.pi = np.mean(self.tau_i, axis=0)
 
         # 2. Update Means (mu_rs) and Variances (sigma2_rs)
-        for r in range(self.K):
-            for s in range(self.K):
-                
-                # Weight matrix for block (r, s): tau_ir * tau_js
-                # tau_i is N x K, outer product gives N x N x K x K
-                tau_rs_ij = np.outer(self.tau_i[:, r], self.tau_i[:, s])
-                
-                # Apply the diagonal mask to the weights
-                weighted_tau = tau_rs_ij * diag_mask
+        tau_ij_rs = self.tau_i.reshape(N,1,K,1)*self.tau_i.reshape(1,N,1,K) # shape N x N x K x K
+        weighted_tau = diag_mask.reshape(N,N,1,1)*tau_ij_rs # shape N x N x K x K
+        denominator = weighted_tau.sum(axis=(0,1)) # shape K x K
+        numerator_mu = tau_ij_rs*A.reshape(N,N,1,1) # shape N x N x K x K
+        numerator_mu = numerator_mu.sum(axis=(0,1)) # shape K x K
+        ratio = numerator_mu/denominator
 
-                # Denominator: sum_{i!=j} tau_ir * tau_js
-                denominator = np.sum(weighted_tau)
-                
-                if denominator > 1e-8:
-                    # Numerator for mu_rs: sum_{i!=j} (tau_ir * tau_js) * A_ij
-                    numerator_mu = np.sum(weighted_tau * A)
-                    self.mu[r, s] = numerator_mu / denominator
-                    
-                    # Numerator for sigma2_rs: sum_{i!=j} (tau_ir * tau_js) * (A_ij - mu_rs)^2
-                    weighted_sq_diff = weighted_tau * (A - self.mu[r, s])**2
-                    self.sigma2[r, s] = np.sum(weighted_sq_diff) / denominator
-                    
-                    # Ensure variance is non-negative
-                    self.sigma2[r, s] = max(self.sigma2[r, s], 1e-3)
-                else:
-                    # Keep old values if block is empty
-                    pass
+        # update only when we have enough evidence (denominator > 1e-8)
+        self.mu[denominator > 1e-8] = ratio[denominator>1e-8]
+        numerator2 = tau_ij_rs*(A**2).reshape(N,N,1,1) # shape N x N x K x K
+        numerator2 = numerator2.sum(axis=(0,1))
+        ratio2 = numerator2/denominator
+        self.sigma2[denominator > 1e-8] = (ratio2 - self.mu**2)[denominator> 1e-8]
+        self.sigma2[self.sigma2 < 1e-3] = 1e-3
+
 
     def fit(self, A):
         """Runs the EM algorithm to fit the SBM to data A."""
