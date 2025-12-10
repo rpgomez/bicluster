@@ -210,33 +210,73 @@ class GaussianAsymmetricSBM:
         self.sigma2[denominator > 1e-8] = (ratio2 - self.mu**2)[denominator> 1e-8]
         self.sigma2[self.sigma2 < 1e-3] = 1e-3
 
+    def _calculate_log_likelihood(self, A):
+        """
+        Computes the Evidence Lower Bound (ELBO).
+        ELBO = E[log P(A|Z)] + E[log P(Z)] + H(Z)
+        """
+        N = self.N
+        K = self.K
+        eps = 1e-10  # Small epsilon to prevent log(0)
+
+        # 1. Expand parameters for broadcasting
+        # Shape: (1, 1, K, K)
+        loc = self.mu.reshape(1, 1, K, K)
+        scale = np.sqrt(self.sigma2).reshape(1, 1, K, K)
+
+        # 2. Compute Log Probability of every edge A_ij belonging to every block combination (r, s)
+        # Shape: (N, N, K, K)
+        # Note: This matches the memory footprint of your E-step
+        log_prob_A = norm.logpdf(A.reshape(N, N, 1, 1), loc=loc, scale=scale)
+
+        # 3. Compute the Joint Posterior Weight for every pair (i, j)
+        # Weight[i, j, r, s] = tau[i, r] * tau[j, s]
+        # Shape: (N, N, K, K)
+        weight_ij_rs = self.tau_i.reshape(N, 1, K, 1) * self.tau_i.reshape(1, N, 1, K)
+
+        # 4. Zero out the diagonal (self-loops are ignored in the model)
+        # We assume the model does not generate A_ii
+        idx = np.arange(N)
+        weight_ij_rs[idx, idx, :, :] = 0.0
+
+        # --- TERM 1: Expected Log Likelihood of A ---
+        # Sum_{i!=j} Sum_{r,s} P(Z_i=r, Z_j=s) * log P(A_ij | theta_rs)
+        term_data = np.sum(weight_ij_rs * log_prob_A)
+
+        # --- TERM 2: Expected Log Prior ---
+        # Sum_i Sum_k P(Z_i=k) * log(pi_k)
+        term_prior = np.sum(self.tau_i * np.log(self.pi + eps))
+
+        # --- TERM 3: Entropy (Model Confidence) ---
+        # - Sum_i Sum_k P(Z_i=k) * log P(Z_i=k)
+        term_entropy = -np.sum(self.tau_i * np.log(self.tau_i + eps))
+
+        return term_data + term_prior + term_entropy
 
     def fit(self, A):
-        """Runs the EM algorithm to fit the SBM to data A."""
-        if A.shape[0] != A.shape[1]:
-            raise ValueError("Input matrix A must be square.")
-
+        # ... (initialization code) ...
         self._initialize_parameters_robust(A)
+        self.log_likelihood_history = []
+        prev_ll = -np.inf
 
         for iteration in range(self.max_iter):
-            # Store old tau_i for convergence check
             tau_old = self.tau_i.copy()
 
-            # E-Step (updates self.tau_i)
+            # E-Step
             self._e_step(A)
             
-            # M-Step (updates self.pi, self.mu, self.sigma2)
+            # M-Step
             self._m_step(A)
             
-            # Check convergence using change in soft assignments (tau_i)
-            tau_diff = np.linalg.norm(self.tau_i - tau_old)
+            # --- NEW: Calculate and Store Log Likelihood ---
+            ll = self._calculate_log_likelihood(A)
+            self.log_likelihood_history.append(ll)
             
-            if tau_diff < self.tol:
-                print(f"EM converged after {iteration + 1} iterations (tau difference: {tau_diff:.6f}).")
+            # Check for convergence based on likelihood (optional but recommended)
+            if abs(ll - prev_ll) < self.tol:
+                print(f"Converged at iter {iteration} with LL: {ll:.4f}")
                 break
-            
-            # Use log likelihood check for alternative convergence criteria if preferred
-            # log_likelihood_check = self._calculate_log_likelihood(A)
-
+            prev_ll = ll
+        
         return self
 
