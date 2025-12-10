@@ -135,6 +135,8 @@ class GaussianAsymmetricSBM:
         N = self.N
         K = self.K
 
+        idx = np.arange(N)
+        
         loc = self.mu.reshape(1,1,K,K)
         scale = np.sqrt(self.sigma2).reshape(1,1,K,K)
         log_prob_A = norm.logpdf(A.reshape(N,N,1,1),loc=loc,scale=scale)
@@ -142,33 +144,30 @@ class GaussianAsymmetricSBM:
         # 1. Start with the log prior: log P(Z_i=k)
         log_p_i_given_k = np.zeros((N,K))
         log_p_i_given_k[:] = np.log(self.pi) # shape N x K
-        
-        # Calculate log_tau_i[i, k] based on contribution of i as source and sink
-        for i in range(self.N):
 
-            # 2. Contribution from i as a SOURCE (A_ij)
-            # Sum over all other nodes j != i and their possible groups m
-            terms = log_prob_A[i,:,:,:] + np.log(self.tau_i).reshape(N,1,K) # shape N  x K x K
 
-            # zero out the ith entry since we're not making use of A[i,i]
-            terms[i] = -np.inf
-            log_contrib_source = self.log_sum_exp_numpy(terms,axis=2) # down to shape N x K
-            log_contrib_source[i] = 0 # log_contrib_source[i] == -inf which hoses me.
-            log_p_i_given_k[i] += log_contrib_source.sum(axis=0) # down to shape K
+        # 2. Contribution from i as a SOURCE (A_ij)
+        # Sum over all other nodes j != i and their possible groups m
+        terms = log_prob_A[:,:,:,:] + np.log(self.tau_i).reshape(1,N,1,K) # shape N x N x K x K
 
-            # 3. Contribution from i as a SINK (A_ji)
-            # Sum over all other nodes j != i and their possible groups m
+        # zero out the ith entry since we're not making use of A[i,i]
+        terms[idx,idx] = -np.inf
+        log_contrib_source = self.log_sum_exp_numpy(terms,axis=3) # down to shape N x N x K
+        log_contrib_source[idx,idx] = 0 # log_contrib_source[i] == -inf which hoses me.
+        log_p_i_given_k += log_contrib_source.sum(axis=1) # down to shape N x K
 
-            terms = log_prob_A[:,i,:,:] + np.log(self.tau_i).reshape(N,K,1) # shape N  x K x K
+        # 3. Contribution from i as a SINK (A_ji)
+        # Sum over all other nodes j != i and their possible groups m
 
-            # zero out the ith entry since we're not making use of A[i,i]
-            terms[i] = -np.inf
-            log_contrib_sink = self.log_sum_exp_numpy(terms,axis=1) # down to shape N x K
-            log_contrib_sink[i] = 0 # log_contrib_source[i] == -inf which hoses me.
-            log_p_i_given_k[i]+= log_contrib_sink.sum(axis=0)
+        terms = log_prob_A[:,:,:,:] + np.log(self.tau_i).reshape(N,1,K,1) # shape N x N x K x K
 
-            log_tau_i[i] = log_p_i_given_k[i]
-            
+        # zero out the ith entry since we're not making use of A[i,i]
+        terms[idx,idx] = -np.inf
+        log_contrib_sink = self.log_sum_exp_numpy(terms,axis=2) # down to shape N x N x K
+        log_contrib_sink[idx,idx] = 0 # log_contrib_source[i] == -inf which hoses me.
+        log_p_i_given_k += log_contrib_sink.sum(axis=0) # down to shape N x K
+
+        log_tau_i = log_p_i_given_k
 
         # Normalize log probabilities to get tau_i (posterior P(Z_i=k | A))
         log_tau_i_max = np.max(log_tau_i, axis=1, keepdims=True)
