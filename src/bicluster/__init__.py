@@ -398,3 +398,67 @@ class GaussianAsymmetricSBM:
         
         return self
 
+
+
+# Code to estimate how many hill climbs might be necessary for success.
+def estimate_number_of_hillclimbs(A,K,num_attempts=50,init=None):
+    """Takes a non-symmetric matrix A, and the number of clusters K
+    and perfroms #num_attempts hill climbs to see if we can determine
+    optimal parameters.
+
+    init specifies which initializer to use:
+
+    * None -- initialize parameters from summary statistics on A. Not recommended.
+    * 'kmeans' -- use Kmeans to make initial hard decision estimate.
+    * 'spectral' -- use Scikit-Learn's spectralbiclustering class to make initial hard decision estimate. This
+    option we recommend.
+
+    Returns: 
+ 
+    * ELBO scores for each hill climb, 
+    * predicted group assignments for each element, 
+    * Shannon Entropy in group assignment for each element i based on the hill climbs performed.
+
+    Shannon Entropy == 0 implies group assignment for that element is
+    very confident. Shannon Entropy >> 0 means that element group
+    assignment is sensitive to initial conditions.
+
+    """
+
+    def compute_entropy(prob):
+        terms = np.log(prob)
+        terms[prob== 0.0]  = 0.0
+        return -(prob*terms).sum()
+    
+    N = A.shape[0]
+    group_assignments = []
+    scores = []
+    for t in tqdm(range(num_attempts),desc='attempts'):
+        # fit a model
+        model  = GaussianAsymmetricSBM(K)
+        model.fit(A,init=init)
+
+        # record score
+        scores.append(model.log_likelihood_history[-1])
+
+        # record group assignments
+        my_assignments = model.tau_i.argmax(axis=1)
+        # permute assignments so we can compare lists.
+        new_assignments = -np.ones_like(my_assignments)
+        new_colors = list(range(K))
+        for n in range(N):
+            if new_assignments[n] < 0:
+                my_color = new_colors.pop(0)
+                siblings = np.argwhere(my_assignments == my_assignments[n]).flatten()
+                new_assignments[siblings] = my_color
+
+        group_assignments.append(new_assignments)
+        
+    scores = np.array(scores)
+    group_assignments = np.array(group_assignments)
+    counts = np.array([np.bincount(group_assignments[:,n],minlength=K) for n in range(N)] )
+    predictions = np.argmax(counts, axis=1)
+    prob_p = counts/num_attempts
+    entropy = np.array([compute_entropy(prob_p[n]) for n in range(N)])
+
+    return scores, predictions,entropy
