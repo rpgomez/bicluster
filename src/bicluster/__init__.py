@@ -133,13 +133,17 @@ class GaussianAsymmetricSBM:
         initial_hard_assignments = kmeans.fit_predict(Features)
         
         # 3. Use hard assignments to initialize soft assignments (tau_i)
+        alphas = np.ones(self.K)
         self.tau_i = np.zeros((self.N, self.K))
         for i in range(self.N):
             # Start with 90% confidence in the K-Means cluster, 
             # and spread 10% uniformly across others (smooths initialization)
             k_assign = initial_hard_assignments[i]
-            self.tau_i[i, :] = 0.1 / (self.K - 1)
-            self.tau_i[i, k_assign] = 0.9
+            distro1 = np.zeros(self.K)
+            distro1[k_assign] = 1
+
+            distro2 = np.random.dirichlet(alphas)
+            self.tau_i[i] = 0.9*distro1 + 0.1 *distro2 # I want some wiggle room in my initialization
 
         # 4. Initialize Priors (pi_k) based on K-Means counts
         self.pi = np.mean(self.tau_i, axis=0)
