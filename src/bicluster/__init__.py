@@ -37,6 +37,8 @@ class GaussianAsymmetricSBM:
 
         # We're going to project data onto a space that is partitioned into K regions
         n_components = int(np.ceil(np.log2(self.K)))
+        n_best = min(3,n_components)
+
         methods = ['bistochastic','scale','log']
         method = methods[0]
         # 1. Run Spectral Biclustering
@@ -49,11 +51,12 @@ class GaussianAsymmetricSBM:
                  random_state=random_state,
                  method = method,
                  n_components = n_components,
+                 n_best=n_best,
                  n_init=10 # Use 10 initializations for stability
              )
         else:
              model = SpectralBiclustering(n_clusters=self.K, n_init=10, method=method,
-                                          n_components = n_components)
+                                          n_components = n_components,n_best=n_best)
 
         # Fit the model directly to the non-symmetric matrix A
         model.fit(A)
