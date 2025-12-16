@@ -1,6 +1,8 @@
 import numpy as np
 from scipy.stats import norm
 from sklearn.cluster import KMeans
+from tqdm.auto import tqdm
+from sklearn.cluster import SpectralBiclustering
 
 class GaussianAsymmetricSBM:
     """
@@ -24,7 +26,97 @@ class GaussianAsymmetricSBM:
         self.tau_i = None  # N x K soft assignments (tau_ik)
         self.log_likelihood_history = []
 
-    def _initialize_parameters_robust(self, A):
+    def _initialize_parameters_spectral_direct(self, A, random_state: int = None):
+        """
+        Initializes SBM parameters using Spectral Biclustering directly on A.
+        
+        This serves as a robust initialization by finding a good simultaneous
+        row/column partition, which is then used as the single shared partition.
+        """
+        self.N = A.shape[0]
+
+        # We're going to project data onto a space that is partitioned into K regions
+        n_components = int(np.ceil(np.log2(self.K)))
+        methods = ['bistochastic','scale','log']
+        method = methods[0]
+        # 1. Run Spectral Biclustering
+        # We specify the number of biclusters (n_clusters = K).
+        # We enforce random_state for reproducibility in hill-climbing experiments.
+        
+        if random_state is not None:
+             model = SpectralBiclustering(
+                 n_clusters=self.K, 
+                 random_state=random_state,
+                 method = method,
+                 n_components = n_components,
+                 n_init=10 # Use 10 initializations for stability
+             )
+        else:
+             model = SpectralBiclustering(n_clusters=self.K, n_init=10, method=method,
+                                          n_components = n_components)
+
+        # Fit the model directly to the non-symmetric matrix A
+        model.fit(A)
+        
+        # 2. Extract Row Assignments
+        # Use the resulting row labels as the hard assignment for the shared partition
+        initial_hard_assignments = model.row_labels_
+        
+        # --- Steps 3-5: Calculate Parameters from Hard Assignments ---
+        # The remainder of the logic is identical to the K-Means initialization,
+        # ensuring the parameters (mu, sigma2) are calculated based on these initial hard assignments.
+
+        # 3. Use hard assignments to initialize soft assignments (tau_i)
+        alphas = np.ones(self.K)
+        self.tau_i = np.zeros((self.N, self.K))
+        for i in range(self.N):
+            k_assign = initial_hard_assignments[i]
+            distro1 = np.zeros(self.K)
+            distro1[k_assign] = 1
+
+            distro2 = np.random.dirichlet(alphas)
+            self.tau_i[i] = 0.9*distro1 + 0.1 *distro2 # I want some wiggle room in my initialization
+            # # Use a high confidence to start the EM in a distinct local region
+            # self.tau_i[i, k_assign] = 0.95
+            # self.tau_i[i, :] = self.tau_i[i, :] / np.sum(self.tau_i[i, :]) 
+
+        # 4. Initialize Priors (pi_k)
+        self.pi = np.mean(self.tau_i, axis=0)
+        
+        # 5. Initialize Block Parameters (mu, sigma2)
+        self.mu = np.zeros((self.K, self.K))
+        self.sigma2 = np.zeros((self.K, self.K))
+        diag_mask = ~np.eye(self.N, dtype=bool)
+
+        for r in range(self.K):
+            for s in range(self.K):
+                rows_r = np.where(initial_hard_assignments == r)[0]
+                cols_s = np.where(initial_hard_assignments == s)[0]
+                
+                block_A = A[np.ix_(rows_r, cols_s)]
+                
+                if r == s:
+                    # Exclude diagonal for r == s
+                    mask = ~np.eye(len(rows_r), dtype=bool)
+                    block_data = block_A[mask]
+                else:
+                    block_data = block_A.flatten()
+
+                if len(block_data) > 1:
+                    self.mu[r, s] = np.mean(block_data)
+                    self.sigma2[r, s] = np.var(block_data)
+                else:
+                    self.mu[r, s] = np.mean(A)
+                    self.sigma2[r, s] = 1.0 
+
+        # Enforce variance floor
+        self.sigma2 = np.maximum(self.sigma2, 0.5) 
+        
+        # Also ensure mu is initialized properly when K-means might lead to empty clusters
+        if np.any(np.isnan(self.mu)):
+             self.mu[np.isnan(self.mu)] = np.mean(A)
+        
+    def _initialize_parameters_robust(self, A, random_state : int = None):
         """Initializes parameters using K-Means for a stable start."""
         self.N = A.shape[0]
 
@@ -34,7 +126,10 @@ class GaussianAsymmetricSBM:
         
         # 2. Run K-Means to get initial hard assignments
         # Use a consistent random state for reproducibility
-        kmeans = KMeans(n_clusters=self.K, random_state=42, n_init='auto')
+        if random_state is not None:
+            kmeans = KMeans(n_clusters=self.K, random_state = random_state, n_init='auto')
+        else:
+            kmeans = KMeans(n_clusters=self.K, n_init='auto')
         initial_hard_assignments = kmeans.fit_predict(Features)
         
         # 3. Use hard assignments to initialize soft assignments (tau_i)
@@ -253,9 +348,32 @@ class GaussianAsymmetricSBM:
 
         return term_data + term_prior + term_entropy
 
-    def fit(self, A):
+    def fit(self, A,init=None):
+        """Fits the model to the table A. There are currently 3
+        means of initializing the hill climb: 
+
+        1. the default technique of initialization based on summary statistics of A.   
+
+        2. A robust technique that makes use of KMeans to initially cluster members to  categories.
+
+        3. Using Scitkit-Learn SpectralBiClustering class.
+
+        Specify init = 'kmeans' to use the KMeans based method. 
+
+        Specify init = 'spectral' to use Scikit-Learn's SpectralBiClustering
+
+        Specify init = None to use the default technique (not recommended).
+        """
+        
         # ... (initialization code) ...
-        self._initialize_parameters_robust(A)
+        if init is None:
+            self._initialize_parameters(A)
+        else:
+            if init == 'kmeans':
+                self._initialize_parameters_robust(A)
+            else:
+                self._initialize_parameters_spectral_direct(A)
+            
         self.log_likelihood_history = []
         prev_ll = -np.inf
 
