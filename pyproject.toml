@@ -2,6 +2,11 @@
 name = "bicluster"
 version = "0.1.0"
 description = "Implements a biclustering algorithm using E-M"
+# Use a valid SPDX license expression
+license = "MIT"
+# Specify the license file(s) to include
+license-files = ["LICENSE"]
+
 readme = "README.md"
 authors = [
     { name = "Rod Gomez", email = "armyofthepenguin@gmail.com" }
