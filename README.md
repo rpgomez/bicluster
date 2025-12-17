@@ -1,4 +1,4 @@
-# `GaussianAsymmetricSBM`
+# `bicluster.py`
 
 ## Gaussian Asymmetric Stochastic Block Model (SBM)
 
