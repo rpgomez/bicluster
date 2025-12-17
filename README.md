@@ -1,37 +1,51 @@
-This is a powerful and well-engineered implementation of a Gaussian Asymmetric Stochastic Block Model (SBM) with robust initialization techniques and a utility for assessing convergence stability.
+# `GaussianAsymmetricSBM`
 
-Here is a comprehensive `README.md` for your code.
+## Gaussian Asymmetric Stochastic Block Model (SBM)
 
----
+This repository contains a robust implementation of the
+Expectation-Maximization (EM) algorithm for the **Gaussian Asymmetric
+Stochastic Block Model (SBM)**. This model is designed to cluster the
+nodes of a directed, weighted network (represented by an adjacency
+matrix A) where the edge weights $A_{ij}$ are assumed to follow a
+Gaussian distribution parameterized by the sender's block (r) and the
+receiver's block (s).
 
-#`GaussianAsymmetricSBM`##Gaussian Asymmetric Stochastic Block Model (SBM)This repository contains a robust implementation of the Expectation-Maximization (EM) algorithm for the **Gaussian Asymmetric Stochastic Block Model (SBM)**. This model is designed to cluster the nodes of a directed, weighted network (represented by an adjacency matrix A) where the edge weights A_{ij} are assumed to follow a Gaussian distribution parameterized by the sender's block (r) and the receiver's block (s).
+The implementation features vectorized EM steps, numerically stable
+log-sum-exp, calculation of the Evidence Lower Bound (ELBO) for
+convergence tracking, and multiple intelligent initialization
+strategies to avoid local optima.
 
-The implementation features vectorized EM steps, numerically stable log-sum-exp, calculation of the Evidence Lower Bound (ELBO) for convergence tracking, and multiple intelligent initialization strategies to avoid local optima.
+## Installation and Dependencies
 
-## Installation and DependenciesThis code relies on standard scientific Python libraries.
+This code relies on standard scientific Python libraries. To install this package after cloning it with its dependencies:
 
 ```bash
-pip install numpy scipy scikit-learn tqdm
+uv pip install .
 
 ```
 
-## Model DescriptionThe model assumes that the network's N nodes are partitioned into K blocks, where the block assignment Z_i for node i is the same for its role as a row (sender) and column (receiver).
+## Model Description
 
-The observed edge weight A_{ij} for nodes i \neq j is modeled as:
+The model assumes that the network's $N$ nodes are partitioned into $K$ blocks, where the block assignment $Z_i$ for node $i$ is the same for its role as a row (sender) and column (receiver).
 
-where Z_i, Z_j \in \{1, \dots, K\}. The diagonal elements A_{ii} (self-loops) are explicitly excluded from the likelihood calculation in both the E and M steps.
+The observed edge weight $A_{ij}$ for nodes $i \neq j$ is modeled as:
 
-The model parameters \Theta = \{\mu, \sigma^2, \pi\} are learned via the EM algorithm, which iteratively maximizes the Evidence Lower Bound (ELBO).
+where $Z_i, Z_j \in \{1, \dots, K\}$. The diagonal elements $A_{ii}$ (self-loops) are explicitly excluded from the likelihood calculation in both the E and M steps.
 
-## How to UseThe primary class is `GaussianAsymmetricSBM`, and the primary function for running stability experiments is `estimate_number_of_hillclimbs`.
+The model parameters $\Theta = \{\mu, \sigma^2, \pi\}$ are learned via the EM algorithm, which iteratively maximizes the Evidence Lower Bound (ELBO).
 
-###1. Generating Example Data (Setup)First, create a sample directed network matrix A.
+## How to Use
+
+The primary class is `GaussianAsymmetricSBM`, and the primary function for running stability experiments is `estimate_number_of_hillclimbs`.
+
+### 1. Generating Example Data (Setup)
+First, create a sample directed network matrix A.
 
 ```python
 # python setup_example.py
 
 import numpy as np
-from gaussian_asymmetric_sbm import GaussianAsymmetricSBM # Assuming you saved the code in this file
+from bicluster import GaussianAsymmetricSBM 
 
 # Parameters for the synthetic network
 N = 100  # Number of nodes
@@ -68,7 +82,9 @@ np.fill_diagonal(A_synth, 0)
 
 ```
 
-###2. Fitting the Model (Single Run)To fit the model, instantiate the class and call `.fit()`.
+### 2. Fitting the Model (Single Run)
+
+To fit the model, instantiate the class and call `.fit()`.
 
 ```python
 # Use the robust Spectral initialization (recommended)
@@ -86,10 +102,16 @@ print("Estimated Mean Matrix (mu):\n", np.round(mu_estimates, 2))
 
 ```
 
-###3. Assessing Stability and Confidence (Recommended)To find the optimal solution and determine which node assignments are stable, run the `estimate_number_of_hillclimbs` utility. This repeatedly runs the EM algorithm from different initial conditions (random seeds) and tracks the maximum log-likelihood (ELBO) achieved and the variability of node assignments.
+### 3. Assessing Stability and Confidence (Recommended)
+
+To find the optimal solution and determine which node assignments are
+stable, run the `estimate_number_of_hillclimbs` utility. This
+repeatedly runs the EM algorithm from different initial conditions
+(random seeds) and tracks the maximum log-likelihood (ELBO) achieved
+and the variability of node assignments.
 
 ```python
-from gaussian_asymmetric_sbm import estimate_number_of_hillclimbs
+from bicluster import estimate_number_of_hillclimbs
 
 NUM_ATTEMPTS = 50
 K_TEST = 3 # Hypothesized number of clusters
@@ -113,7 +135,9 @@ print(f"Number of confident node assignments (Entropy < 0.1): {len(low_entropy_n
 
 ```
 
-##️ Initialization Methods (`init` parameter)The choice of initialization is critical for EM algorithms, which are prone to converging to local optima. The `fit` method supports three modes:
+##️ Initialization Methods (`init` parameter)
+
+The choice of initialization is critical for EM algorithms, which are prone to converging to local optima. The `fit` method supports three modes:
 
 | `init` Value | Method | Description | Recommendation |
 | --- | --- | --- | --- |
@@ -123,15 +147,23 @@ print(f"Number of confident node assignments (Entropy < 0.1): {len(low_entropy_n
 
 ---
 
-## FAQ###1. What does the "Hill Climb" utility achieve?The **hill climb** utility (`estimate_number_of_hillclimbs`) runs the EM algorithm multiple times from different initializations. The EM algorithm is a "hill climbing" procedure on the likelihood surface. By running it many times, you achieve two goals:
+## FAQ
+
+### 1. What does the "Hill Climb" utility achieve?
+The **hill climb** utility (`estimate_number_of_hillclimbs`) runs the EM algorithm multiple times from different initializations. The EM algorithm is a "hill climbing" procedure on the likelihood surface. By running it many times, you achieve two goals:
 
 * **Find the Global Optimum:** The run that yields the highest ELBO score is considered the best fit.
 * **Assess Robustness:** The `entropy` output shows which node assignments are unstable, meaning they change depending on the starting point. High entropy suggests the node is an *outlier* or lies near a *boundary* between clusters.
 
-###2. Why does the model exclude diagonal elements?The diagonal elements A_{ii} represent self-loops or self-interaction values. The SBM is fundamentally a model of **relationships between distinct nodes**. Excluding A_{ii} ensures that the clustering is driven purely by the block-level interactions \mu_{rs} for r \ne s, which is the standard practice for modeling relational data.
+### 2. Why does the model exclude diagonal elements?
+The diagonal elements $A_{ii}$ represent self-loops or self-interaction values. The SBM is fundamentally a model of **relationships between distinct nodes**. Excluding $A_{ii}$ ensures that the clustering is driven purely by the block-level interactions $\mu_{rs}$ for $r \ne s$, which is the standard practice for modeling relational data.
 
-###3. What is the Evidence Lower Bound (ELBO)?The ELBO, computed by `_calculate_log_likelihood`, is a measure of model fitness used in variational inference methods like the EM algorithm. It is composed of three parts:
+### 3. What is the Evidence Lower Bound (ELBO)?
+The ELBO, computed by `_calculate_log_likelihood`, is a measure of model fitness used in variational inference methods like the EM algorithm. It is composed of three parts:
+
+$$\text{ELBO} = \mathbb{E}[\log P(A|Z)] + \mathbb{E}[\log P(Z|\pi)] - \mathbb{E}[\log Q(Z)]$$
 
 It is guaranteed to increase at every step of the EM algorithm, making it the perfect metric to track convergence.
 
-###4. Why did I get a `ValueError` from `SpectralBiclustering`?If you encounter an error like `ValueError: n_best=3 must be <= n_components=2.`, it means your `n_components` parameter is too low for the number of clusters K you requested. This implementation handles that by automatically setting `n_components` to be at least \lceil \log_2(K) \rceil, ensuring the spectral embedding has enough dimensions to distinguish all K groups.
+### 4. Why did I get a `ValueError` from `SpectralBiclustering`?
+If you encounter an error like `ValueError: n_best=3 must be <= n_components=2.`, it means your `n_components` parameter is too low for the number of clusters K you requested. This implementation handles that by automatically setting `n_components` to be at least $\lceil \log_2(K) \rceil$, ensuring the spectral embedding has enough dimensions to distinguish all $K$ groups.
